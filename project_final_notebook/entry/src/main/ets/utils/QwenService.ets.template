@@ -1,0 +1,146 @@
+import { http } from '@kit.NetworkKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { common } from '@kit.AbilityKit';
+
+// --- 接口定义 ---
+interface ImageUrl { url: string; }
+interface ContentItem { type: string; text?: string; image_url?: ImageUrl; }
+interface Message { role: string; content: ContentItem[] | string; }
+interface RequestBody { model: string; messages: Message[]; }
+interface ApiResponse { choices: Choice[]; }
+interface ChoiceMessage { content: string; }
+interface Choice { message: ChoiceMessage; }
+interface AudioResponse { text: string; message?: string; }
+interface LocalMultiPartData { name: string; contentType: string; data?: string | Object | ArrayBuffer; filePath?: string; }
+
+// --- 服务类 ---
+interface GeneratedObjectLiteralInterface_1 {
+  model: string;
+  input: string;
+  voice: string;
+}
+
+export class QwenService {
+  // TODO: 填入你的 API Key
+  private static readonly API_KEY = 'YOUR_QWEN_API_KEY';
+
+  private static readonly CHAT_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+  private static readonly AUDIO_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/audio/transcriptions';
+  private static readonly TTS_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/audio/speech';
+
+  private static readonly VISION_MODEL = 'qwen-vl-max';
+  private static readonly TEXT_MODEL = 'qwen-plus';
+  private static readonly AUDIO_MODEL = 'paraformer-v1';
+  private static readonly TTS_MODEL = 'cosyvoice-v1';
+
+  /**
+   * [修改] 优化提示词：强制要求根节点必须连接子节点
+   */
+  static async generateMindMapCode(content: string): Promise<string> {
+    const prompt = `请将以下笔记内容总结并转换为 Mermaid.js 的 graph 语法格式。
+严格遵守以下要求：
+1. 第一行必须是：graph LR
+   (注意：使用从左到右布局，这样更适合手机阅读)
+2. **关键要求**：必须显式写出根节点到二级节点的连线箭头（-->），绝不允许出现孤立节点！
+3. **结构示例**：
+   id1((核心主题)):::root --> id2(二级要点A):::level1
+   id1 --> id3(二级要点B):::level1
+   id2 --> id4[三级细节]:::level2
+4. 节点样式绑定：
+   - 根节点最后加 :::root
+   - 二级节点最后加 :::level1
+   - 三级节点最后加 :::level2
+5. 节点文字控制在 8 个字以内，保持精简。
+6. 只返回代码内容，不要包含 \`\`\`mermaid 标记。
+
+笔记内容：
+${content}`;
+
+    const result = await QwenService.chat("你是一个思维导图生成专家，擅长总结逻辑结构。", prompt);
+    // 再次清洗，防止 AI 偶尔带出的 markdown 标记
+    return result.replace(/```mermaid/g, '').replace(/```/g, '').trim();
+  }
+
+  // --- 原有方法保持不变 ---
+  static async textToSpeech(text: string, voice: string, context: common.UIAbilityContext): Promise<string | null> {
+    const httpRequest = http.createHttp();
+    try {
+      const requestBody: GeneratedObjectLiteralInterface_1 = { model: QwenService.TTS_MODEL, input: text, voice: voice };
+      const response = await httpRequest.request(QwenService.TTS_URL, {
+        method: http.RequestMethod.POST,
+        header: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QwenService.API_KEY}` },
+        extraData: JSON.stringify(requestBody), expectDataType: http.HttpDataType.ARRAY_BUFFER, readTimeout: 60000, connectTimeout: 60000
+      });
+      if (response.responseCode === 200 && response.result) {
+        const buffer = response.result as ArrayBuffer;
+        const filePath = `${context.cacheDir}/tts_${Date.now()}.mp3`;
+        const file = fs.openSync(filePath, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE);
+        fs.writeSync(file.fd, buffer); fs.closeSync(file);
+        return filePath;
+      } else { console.error('TTS API Error:', response.responseCode); return null; }
+    } catch (err) { console.error('TTS Network Error:', err); return null; } finally { httpRequest.destroy(); }
+  }
+
+  static async chat(systemPrompt: string, userPrompt: string): Promise<string> {
+    const requestBody: RequestBody = {
+      model: QwenService.TEXT_MODEL,
+      messages: [ { role: "system", content: systemPrompt }, { role: "user", content: userPrompt } ]
+    };
+    const httpRequest = http.createHttp();
+    try {
+      const response = await httpRequest.request(QwenService.CHAT_URL, {
+        method: http.RequestMethod.POST,
+        header: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QwenService.API_KEY}` },
+        extraData: JSON.stringify(requestBody), readTimeout: 30000, connectTimeout: 30000
+      });
+      if (response.responseCode === 200) {
+        const result = JSON.parse(response.result as string) as ApiResponse;
+        if (result.choices && result.choices.length > 0) return result.choices[0].message.content;
+        return 'AI 未返回有效内容';
+      } else { return `AI 请求失败: ${response.responseCode}`; }
+    } catch (err) { console.error('Chat Error:', err); return '网络请求失败'; } finally { httpRequest.destroy(); }
+  }
+
+  static async recognizeText(base64Image: string): Promise<string> {
+    let cleanBase64 = base64Image;
+    if (!base64Image.startsWith('data:image')) { cleanBase64 = `data:image/png;base64,${base64Image}`; }
+    const requestBody: RequestBody = {
+      model: QwenService.VISION_MODEL,
+      messages: [{ role: "user", content: [{ type: "text", text: "提取图片中的文字，直接输出内容，不要任何解释。" }, { type: "image_url", image_url: { url: cleanBase64 } }] }]
+    };
+    const httpRequest = http.createHttp();
+    try {
+      const response = await httpRequest.request(QwenService.CHAT_URL, {
+        method: http.RequestMethod.POST,
+        header: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${QwenService.API_KEY}` },
+        extraData: JSON.stringify(requestBody), readTimeout: 30000, connectTimeout: 30000
+      });
+      if (response.responseCode === 200) {
+        const result = JSON.parse(response.result as string) as ApiResponse;
+        if (result.choices && result.choices.length > 0) return result.choices[0].message.content;
+        return '未识别到内容';
+      } else { return `OCR 错误: ${response.responseCode}`; }
+    } catch (err) { console.error('OCR Error:', err); return '网络请求失败'; } finally { httpRequest.destroy(); }
+  }
+
+  static async transcribeAudio(filePath: string): Promise<string> {
+    const httpRequest = http.createHttp();
+    try {
+      const multiPartData: LocalMultiPartData[] = [
+        { name: 'model', contentType: 'text/plain', data: QwenService.AUDIO_MODEL },
+        { name: 'file', contentType: 'application/octet-stream', filePath: filePath }
+      ];
+      const response = await httpRequest.request(QwenService.AUDIO_URL, {
+        method: http.RequestMethod.POST,
+        header: { 'Content-Type': 'multipart/form-data', 'Authorization': `Bearer ${QwenService.API_KEY}` },
+        multiPartData: multiPartData, readTimeout: 60000, connectTimeout: 60000
+      } as http.HttpRequestOptions);
+      if (response.responseCode === 200) {
+        const result = JSON.parse(response.result as string) as AudioResponse;
+        if (result.text) return result.text;
+        return '未识别到语音内容';
+      } else { console.error('ASR API Error:', response.result); return `语音识别失败: ${response.responseCode}`; }
+    } catch (err) { const error = err as BusinessError; console.error('ASR Network Error:', error.message); return '语音识别网络请求失败'; } finally { httpRequest.destroy(); }
+  }
+}

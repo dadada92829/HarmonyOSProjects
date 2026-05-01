@@ -1,0 +1,139 @@
+import { http } from '@kit.NetworkKit';
+import { RecordItem, RecordType } from '../../model/RecordType';
+
+// --- 接口定义 ---
+interface QwenMessageContent {
+  content: string;
+}
+interface QwenChoice {
+  message: QwenMessageContent;
+}
+interface QwenResponse {
+  choices: QwenChoice[];
+}
+interface QwenRequestMessage {
+  role: string;
+  content: string;
+}
+interface QwenRequestData {
+  model: string;
+  messages: QwenRequestMessage[];
+  temperature: number;
+}
+
+// --- 1. 定义新风格枚举 ---
+export enum AIStyle {
+  PROFESSIONAL = '专业理财师',
+  ELDER = '智慧长者',
+  DETECTIVE = '你的母亲',
+  FRIEND = '幽默好友'
+}
+
+export class AIAdvisor {
+  // 替换你的 API Key
+  private static readonly API_KEY = 'YOUR_QWEN_API_KEY';
+  private static readonly API_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+
+  /**
+   * 2. 获取对应风格的 System Prompt
+   */
+  private static getSystemPrompt(style: AIStyle): string {
+    switch (style) {
+      case AIStyle.ELDER:
+        return `你是一位年过七旬的智慧长者。请用慈祥、平和、语重心长的语气评价晚辈的账单。
+        要求：多用"孩子"、"切记"等词汇，引用生活哲理，重在引导储蓄和生活平衡。字数200以内。`;
+
+      case AIStyle.DETECTIVE:
+        return `你是一位温柔体贴但关注孩子财务状况的母亲。
+        要求：妈妈对孩子说话的语气，关注孩子消费观和存钱观的培养，适当指出孩子的问题。字数200以内。`;
+
+      case AIStyle.FRIEND:
+        return `你是一位幽默风趣的死党好友。
+        要求：说话轻松、带点小幽默，就像在咖啡厅聊天。对于乱花钱的行为可以善意调侃，对于理财行为给予大大点赞。字数200以内。`;
+
+      case AIStyle.PROFESSIONAL:
+      default:
+        return `你是一位顶级会计事务所的高级理财顾问。
+        要求：语言专业、客观、简练。使用数据说话，给出具体的资产配置建议并简要说明原因。可以详细一些，用排比句，但不要用markdown或者加粗。字数300左右。`;
+    }
+  }
+
+  static async analyze(records: RecordItem[], style: AIStyle = AIStyle.PROFESSIONAL): Promise<string> {
+    if (!records || records.length === 0) {
+      return "暂无数据，快去记一笔吧！🤖";
+    }
+
+    const summary = AIAdvisor.generateSummaryPrompt(records);
+    const systemPrompt = AIAdvisor.getSystemPrompt(style);
+
+    const messages: QwenRequestMessage[] = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: summary }
+    ];
+
+    const requestData: QwenRequestData = {
+      model: "qwen-turbo",
+      messages: messages,
+      temperature: 0.8
+    };
+
+    try {
+      const httpRequest = http.createHttp();
+      const response = await httpRequest.request(AIAdvisor.API_URL, {
+        method: http.RequestMethod.POST,
+        header: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${AIAdvisor.API_KEY}`
+        },
+        extraData: requestData,
+        readTimeout: 10000,
+        connectTimeout: 10000
+      });
+
+      if (response.responseCode === 200) {
+        let result: QwenResponse;
+        if (typeof response.result === 'string') {
+          result = JSON.parse(response.result) as QwenResponse;
+        } else {
+          result = response.result as QwenResponse;
+        }
+
+        if (result.choices && result.choices.length > 0 && result.choices[0].message) {
+          return result.choices[0].message.content;
+        } else {
+          return "AI 正在思考中，请稍后...";
+        }
+      } else {
+        return `网络请求失败 (${response.responseCode})`;
+      }
+    } catch (err) {
+      console.error('Network Error:', JSON.stringify(err));
+      return "网络连接异常，请检查设置。";
+    }
+  }
+
+  private static generateSummaryPrompt(records: RecordItem[]): string {
+    let totalIncome = 0;
+    let totalExpense = 0;
+    const categoryMap = new Map<string, number>();
+
+    records.forEach(item => {
+      if (item.type === RecordType.INCOME) {
+        totalIncome += item.amount;
+      } else {
+        totalExpense += item.amount;
+        const val = categoryMap.get(item.category) || 0;
+        categoryMap.set(item.category, val + item.amount);
+      }
+    });
+
+    const balance = totalIncome - totalExpense;
+    const sortedCategories = Array.from(categoryMap.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(entry => `${entry[0]}(¥${entry[1].toFixed(0)})`)
+      .join('、');
+
+    return `财务简报：总收入${totalIncome}，总支出${totalExpense}，结余${balance}。支出前三：${sortedCategories}。`;
+  }
+}

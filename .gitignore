@@ -1,0 +1,60 @@
+# ============================================
+#  HarmonyOS 项目通用 .gitignore
+# ============================================
+
+# --- 构建产物 ---
+build/
+**/build/
+.codebuddy/
+.previews/
+**/.preview/
+
+# --- 模块依赖 ---
+oh_modules/
+**/oh_modules/
+
+# --- IDE / 编辑器 ---
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.vscode/
+
+# --- 系统临时文件 ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Office 临时文件 ---
+~$*.docx
+~$*.xlsx
+~$*.pptx
+~$*.doc
+~$*.xls
+~$*.ppt
+
+# --- 环境 / 密钥 ---
+.env
+.env.local
+*.p12
+*.jks
+*.keystore
+!debug.keystore
+
+# --- 日志 ---
+*.log
+hvigor/
+.hvigor/
+
+# --- 包含 API 密钥的源文件（使用同名 .template 文件替代） ---
+project3_accountbook/entry/src/main/ets/common/utils/AIAdvisor.ets
+project_final_notebook/entry/src/main/ets/utils/QwenService.ets
+
+# --- 本地配置文件 (可能含敏感信息) ---
+local.properties
+**/local.properties
+/local/
+/captures/
+.externalNativeBuild/
+.claude/
